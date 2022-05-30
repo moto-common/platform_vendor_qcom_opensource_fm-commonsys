@@ -299,7 +299,7 @@ public class FMRadioService extends Service
       mA2dpDeviceSupportInHal = valueStr.contains("=true");
       Log.d(LOGTAG, " is A2DP device Supported In HAL"+mA2dpDeviceSupportInHal);
 
-      mUseAudioSession = SystemProperties.getBoolean("ro.vendor.fm.use_audio_session", false);
+      mUseAudioSession = SystemProperties.getBoolean("ro.vendor.fm.use_audio_session", true);
       if (mUseAudioSession) {
           mRoutingListener = new AudioRoutingListener();
       }
@@ -442,7 +442,7 @@ public class FMRadioService extends Service
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
-            if (FmReceiver.isCherokeeChip() && mPref.getBoolean("SLIMBUS_SEQ", true)) {
+            if (mPref.getBoolean("SLIMBUS_SEQ", true)) {
                 enableSlimbus(ENABLE_SLIMBUS_DATA_PORT);
             }
         }
@@ -670,7 +670,7 @@ public class FMRadioService extends Service
             }
             if (!mIsFMDeviceLoopbackActive && !mA2dpConnected && !mSpeakerPhoneOn) {
                 // not on BT and device loop is also not active
-                if (FmReceiver.isCherokeeChip() && mPref.getBoolean("SLIMBUS_SEQ", true)) {
+                if (mPref.getBoolean("SLIMBUS_SEQ", true)) {
                     enableSlimbus(ENABLE_SLIMBUS_DATA_PORT);
                 }
                 exitRecordSinkThread();
@@ -2783,7 +2783,7 @@ public class FMRadioService extends Service
            Log.d(LOGTAG, "keyValPairs = " + keyValPairs);
            audioManager.setParameters(keyValPairs);
        }
-       if (mReceiver.isCherokeeChip() && (mPref.getBoolean("SLIMBUS_SEQ", true))) {
+       if (mPref.getBoolean("SLIMBUS_SEQ", true)) {
           enableSlimbus(ENABLE_SLIMBUS_DATA_PORT);
        }
    }
@@ -4224,7 +4224,7 @@ public class FMRadioService extends Service
             return;
         }
         if (mIsFMDeviceLoopbackActive) {
-            if (mReceiver != null && FmReceiver.isCherokeeChip() &&
+            if (mReceiver != null &&
                     mPref.getBoolean("SLIMBUS_SEQ", true)) {
                 enableSlimbus(DISABLE_SLIMBUS_DATA_PORT);
             }
