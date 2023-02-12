@@ -344,19 +344,23 @@ public class FmReceiver extends FmTransceiver
    private static final int SEARCH_SINR_INT = 1;
 
    public boolean isSmdTransportLayer() {
-       String chip = getSocName();
-       if (chip.equals("pronto"))
+       String chip = SystemProperties.get("vendor.qcom.bluetooth.soc","default");
+       if (chip.equals("default"))
            return true;
        else
            return false;
    }
 
    public static boolean isRomeChip() {
-       String chip = FmReceiverJNI.getSocNameNative();
+       String chip = SystemProperties.get("vendor.qcom.bluetooth.soc");
        if (chip.equals("rome"))
            return true;
        else
            return false;
+   }
+
+   public static boolean isCherokeeChip() {
+       return true;
    }
 
    public PhoneStateListener  mDataConnectionStateListener = new PhoneStateListener(){
@@ -438,6 +442,7 @@ public class FmReceiver extends FmTransceiver
    public FmReceiver(){
       mControl = new FmRxControls();
       mRdsData = new FmRxRdsData (sFd);
+      mRxEvents = new FmRxEventListner();
    }
 
    /**
@@ -452,11 +457,79 @@ public class FmReceiver extends FmTransceiver
    public FmReceiver(String devicePath,
                      FmRxEvCallbacksAdaptor callback) throws InstantiationException {
       mControl = new FmRxControls();
+      mRxEvents = new FmRxEventListner();
 
       Log.e(TAG, "FmReceiver constructor");
       //registerClient(callback);
       mCallback = callback;
-      mFmReceiverJNI = new FmReceiverJNI(mCallback);
+      if (isCherokeeChip()) {
+          mFmReceiverJNI = new FmReceiverJNI(mCallback);
+      }
+   }
+
+
+   /*==============================================================
+   FUNCTION:  registerClient
+   ==============================================================*/
+   /**
+   *    Registers a callback for FM receiver event
+   *           notifications.
+   *    <p>
+   *    This is a synchronous command used to register for event
+   *    notifications from the FM receiver driver. Since the FM
+   *    driver performs some tasks asynchronously, this function
+   *    allows the client to receive information asynchronously.
+   *    <p>
+   *    When calling this function, the client must pass a callback
+   *    function which will be used to deliver asynchronous events.
+   *    The argument callback must be a non-NULL value.  If a NULL
+   *    value is passed to this function, the registration will
+   *    fail.
+   *    <p>
+   *    The client can choose which events will be sent from the
+   *    receiver driver by simply implementing functions for events
+   *    it wishes to receive.
+   *    <p>
+   *    @param callback the callbacks to handle the events
+   *                               events from the FM receiver.
+   *    @return true if Callback registered, false if Callback
+   *            registration failed.
+   *    <p>
+   *    @see #acquire
+   *    @see #unregisterClient
+   *
+   */
+   public boolean registerClient(FmRxEvCallbacks callback){
+      boolean status;
+      status = super.registerClient(callback);
+      /* Do Receiver Specific Stuff here.*/
+
+      return status;
+   }
+
+   /*==============================================================
+   FUNCTION:  unregisterClient
+   ==============================================================*/
+   /**
+   *    UnRegisters a client's event notification callback.
+   *
+   *    This is a synchronous command used to unregister a client's
+   *    event callback.
+   *    <p>
+   *    @return true Always returns true.
+   *    <p>
+   *    @see #acquire
+   *    @see #release
+   *    @see #registerClient
+   *
+   */
+   public boolean unregisterClient () {
+      boolean status;
+
+      status = super.unregisterClient();
+
+      /* Do Receiver Specific Stuff here.*/
+      return status;
    }
 
    /*==============================================================
@@ -524,6 +597,10 @@ public class FmReceiver extends FmTransceiver
       status = super.enable(configSettings, FmTransceiver.FM_RX);
 
       if (status == true ) {
+          if (!isCherokeeChip()) {
+              /* Do Receiver Specific Enable Stuff here.*/
+              status = registerClient(mCallback);
+          }
           mRdsData = new FmRxRdsData(sFd);
           registerDataConnectionStateListener(app_context);
           app_context.registerReceiver(mReceiver, mIntentFilter);
@@ -583,6 +660,10 @@ public class FmReceiver extends FmTransceiver
 
       setFMPowerState(FMState_Turned_Off);
       Log.v(TAG, "reset: NEW-STATE : FMState_Turned_Off");
+
+      status = unregisterClient();
+
+      release("/dev/radio0");
 
       return status;
    }
@@ -1484,7 +1565,11 @@ public class FmReceiver extends FmTransceiver
       int piLower = 0;
       int piHigher = 0;
 
-      buff = FmReceiverJNI.getPsBuffer(buff);
+      if(isCherokeeChip()) {
+          buff = FmReceiverJNI.getPsBuffer(buff);
+      }
+      else
+          FmReceiverJNI.getBufferNative(sFd, buff, 3);
 
       /* byte is signed ;(
       *  knock down signed bits
@@ -1537,8 +1622,12 @@ public class FmReceiver extends FmTransceiver
       int piLower = 0;
       int piHigher = 0;
 
-      buff = FmReceiverJNI.getPsBuffer(buff);
-
+      if (isCherokeeChip()) {
+          buff = FmReceiverJNI.getPsBuffer(buff);
+      }
+      else {
+          FmReceiverJNI.getBufferNative(sFd, buff, 2);
+      }
       String rdsStr = new String(buff);
       /* byte is signed ;(
       *  knock down signed bit
@@ -1565,10 +1654,15 @@ public class FmReceiver extends FmTransceiver
       int bytes_read;
       String rt = "";
       int rt_len;
-      int i, j = 2;
+      int i, count, avail_tag_num = 0;
       byte tag_code, tag_len, tag_start_pos;
-      rt_plus = FmReceiverJNI.getPsBuffer(rt_plus);
-
+      if (isCherokeeChip()) {
+          rt_plus = FmReceiverJNI.getPsBuffer(rt_plus);
+      }
+      else
+      {
+          bytes_read = FmReceiverJNI.getBufferNative(sFd, rt_plus, BUF_RTPLUS);
+      }
       bytes_read = rt_plus[0];
       if (bytes_read > 0) {
           if (rt_plus[RT_OR_ERT_IND] == 0)
@@ -1578,14 +1672,20 @@ public class FmReceiver extends FmTransceiver
           if ((rt != "") && (rt != null)) {
               rt_len = rt.length();
               mRdsData.setTagNums(0);
-              for (i = 1; (i <= 2) && (j < rt_plus[LEN_IND]); i++) {
-                  tag_code = rt_plus[j++];
-                  tag_start_pos = rt_plus[j++];
-                  tag_len = rt_plus[j++];
+              avail_tag_num = (rt_plus[LEN_IND] - 2)/3;
+              if (avail_tag_num > 2) {
+                  avail_tag_num = 2;
+              }
+              count = 1;
+              for (i = 0; i < avail_tag_num; i++) {
+                  tag_code = rt_plus[2+3*i];
+                  tag_start_pos = rt_plus[3+3*i];
+                  tag_len = rt_plus[4+3*i];
                   if (((tag_len + tag_start_pos) <= rt_len) && (tag_code > 0)) {
                       mRdsData.setTagValue(rt.substring(tag_start_pos,
-                                            (tag_len + tag_start_pos)), i);
-                      mRdsData.setTagCode(tag_code, i);
+                                            (tag_len + tag_start_pos)), count);
+                      mRdsData.setTagCode(tag_code, count);
+                      count++;
                   }
               }
           } else {
@@ -1605,8 +1705,14 @@ public class FmReceiver extends FmTransceiver
       String encoding_type = "UCS-2";
       int bytes_read;
 
-      raw_ert = FmReceiverJNI.getPsBuffer(raw_ert);
-
+      if(isCherokeeChip())
+      {
+         raw_ert = FmReceiverJNI.getPsBuffer(raw_ert);
+      }
+      else
+      {
+         bytes_read = FmReceiverJNI.getBufferNative(sFd, raw_ert, BUF_ERT);
+      }
       bytes_read = raw_ert[0];
       if (bytes_read > 0) {
           ert_text = new byte[raw_ert[LEN_IND]];
@@ -1673,29 +1779,58 @@ public class FmReceiver extends FmTransceiver
       int  [] AfList = new int [50];
       int lowerBand, i;
       int tunedFreq, PI, size_AFLIST;
+      if (isCherokeeChip()) {
+          buff = FmReceiverJNI.getPsBuffer(buff);
+      }
+      else
+      {
+          FmReceiverJNI.getBufferNative(sFd, buff, TAVARUA_BUF_AF_LIST);
+      }
+      if (isSmdTransportLayer() || isRomeChip() || isCherokeeChip()) {
+          Log.d(TAG, "SMD transport layer or Rome chip");
 
-      buff = FmReceiverJNI.getPsBuffer(buff);
+          tunedFreq = (buff[0] & 0xFF) |
+                      ((buff[1] & 0xFF) << 8) |
+                      ((buff[2] & 0xFF) << 16) |
+                      ((buff[3] & 0xFF) << 24) ;
+          Log.d(TAG, "tunedFreq = " +tunedFreq);
 
-      tunedFreq = (buff[0] & 0xFF) |
-                  ((buff[1] & 0xFF) << 8) |
-                  ((buff[2] & 0xFF) << 16) |
-                  ((buff[3] & 0xFF) << 24) ;
-      Log.d(TAG, "tunedFreq = " +tunedFreq);
-       PI = (buff[4] & 0xFF) |
-           ((buff[5] & 0xFF) << 8);
-      Log.d(TAG, "PI: " + PI);
-       size_AFLIST = buff[6] & 0xFF;
-      Log.d(TAG, "size_AFLIST : " +size_AFLIST);
+          PI = (buff[4] & 0xFF) |
+               ((buff[5] & 0xFF) << 8);
+          Log.d(TAG, "PI: " + PI);
 
-      for (i = 0;i < size_AFLIST;i++) {
-            AfList[i] = (buff[6 + i * 4 + 1] & 0xFF) |
-                       ((buff[6 + i * 4 + 2] & 0xFF) << 8) |
-                       ((buff[6 + i * 4 + 3] & 0xFF) << 16) |
-                       ((buff[6 + i * 4 + 4] & 0xFF) << 24) ;
-            Log.d(TAG, "AF: " + AfList[i]);
+          size_AFLIST = buff[6] & 0xFF;
+          Log.d(TAG, "size_AFLIST : " +size_AFLIST);
+
+          for (i = 0;i < size_AFLIST;i++) {
+                AfList[i] = (buff[6 + i * 4 + 1] & 0xFF) |
+                           ((buff[6 + i * 4 + 2] & 0xFF) << 8) |
+                           ((buff[6 + i * 4 + 3] & 0xFF) << 16) |
+                           ((buff[6 + i * 4 + 4] & 0xFF) << 24) ;
+                Log.d(TAG, "AF: " + AfList[i]);
+          }
+      } else {
+
+          if ((buff[4] <= 0) || (buff[4] > 25))
+              return null;
+
+          lowerBand = FmReceiverJNI.getLowerBandNative(sFd);
+          Log.d (TAG, "Low band " + lowerBand);
+
+          Log.d (TAG, "AF_buff 0: " + (buff[0] & 0xff));
+          Log.d (TAG, "AF_buff 1: " + (buff[1] & 0xff));
+          Log.d (TAG, "AF_buff 2: " + (buff[2] & 0xff));
+          Log.d (TAG, "AF_buff 3: " + (buff[3] & 0xff));
+          Log.d (TAG, "AF_buff 4: " + (buff[4] & 0xff));
+
+          for (i=0; i<buff[4]; i++) {
+               AfList[i] = ((buff[i+4] & 0xFF) * 1000) + lowerBand;
+               Log.d (TAG, "AF : " + AfList[i]);
+          }
       }
 
       return AfList;
+
    }
 
    /*==============================================================
@@ -2264,6 +2399,39 @@ public class FmReceiver extends FmTransceiver
    }
 
    /*==============================================================
+   FUNCTION:  getStationList
+   ==============================================================*/
+   /**
+   *    Returns a frequency List of the searched stations.
+   *
+   *    <p>
+   *    This method retreives the results of the {@link
+   *    #searchStationList}. This method should be called when the
+   *    FmRxEvSearchListComplete is invoked.
+   *
+   *    <p>
+   *    @return      An array of integers that corresponds to the
+   *                    frequency of the searched Stations
+   *    @see #searchStationList
+   */
+   public int[] getStationList ()
+   {
+      int state = getFMState();
+      /* Check current state of FM device */
+      if (state == FMState_Turned_Off || state == FMState_Srch_InProg) {
+          Log.d(TAG, "getStationList: Device currently busy in executing another command.");
+          return null;
+      }
+      int[] stnList = new int [100];
+
+      stnList = mControl.stationList (sFd);
+
+      return stnList;
+
+   }
+
+
+   /*==============================================================
    FUNCTION:  getRssi
    ==============================================================*/
    /**
@@ -2756,6 +2924,38 @@ public class FmReceiver extends FmTransceiver
        return retval;
    }
 
+   public static void getSpurTableData()
+   {
+     int freq;
+     byte no_of_spurs;
+     int rotation_value;
+     byte lsbOfLen;
+     byte filterCoe;
+     byte isEnbale;
+     byte [] buff = new byte[STD_BUF_SIZE];
+     int i = 0;
+     FmReceiverJNI.getBufferNative(sFd, buff, 13);
+
+     freq = buff[0] & 0xFF;
+     freq |= ((buff[1] & 0xFF) << 8);
+     freq |= ((buff[2] & 0xFF) << 16);
+     Log.d (TAG, "freq = " +freq);
+     no_of_spurs =  buff[3];
+     Log.d (TAG, "no_of_spurs = " + no_of_spurs);
+     for(i = 0; i < FmConfig.no_Of_Spurs_For_Entry; i++) {
+         rotation_value =  buff[(i * 4) + 4] & 0xFF;
+         rotation_value |= ((buff[(i * 4) + 5] & 0xFF) << 8);
+         rotation_value |= ((buff[(i * 4) + 6] & 0x0F) << 12);
+         Log.d (TAG, "rotation_value = " +rotation_value);
+         lsbOfLen = (byte) (((buff[(i * 4) + 6] & 0xF0) >> 4) & 0x01);
+         Log.d (TAG, "lsbOfLen = "+lsbOfLen);
+         filterCoe = (byte) (((buff[(i * 4) + 6] & 0xF0) >> 5) & 0x03);
+         Log.d (TAG, "filterCoe = " +filterCoe);
+         isEnbale = (byte) (((buff[(i * 4) + 6] & 0xF0) >> 7) & 0x01);
+         Log.d (TAG, "spur level: " +buff[(i * 4) + 7]);
+     }
+     return;
+   }
    public void FMcontrolLowPassFilter(int state, int net_type, int enable) {
        int RatConf = SystemProperties.getInt("persist.fm_wan.ratconf", 0);
        Log.v (TAG, "FMcontrolLowPassFilter " + RatConf);
@@ -2889,9 +3089,5 @@ public class FmReceiver extends FmTransceiver
    public void EnableSoftMute(int enable) {
        Log.d(TAG, "enableSoftMute :enable =" + enable);
        mControl.enableSoftMute(sFd, enable);
-   }
-
-   public String getSocName() {
-     return FmReceiverJNI.getSocNameNative();
    }
 }

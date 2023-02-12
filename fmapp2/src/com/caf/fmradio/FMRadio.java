@@ -28,6 +28,7 @@
 
 package com.caf.fmradio;
 
+import android.app.ActionBar;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -98,6 +99,7 @@ import com.caf.fmradio.HorizontalNumberPicker.Scale;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Point;
+import android.graphics.drawable.ColorDrawable;
 import android.Manifest;
 import android.content.pm.PackageManager;
 
@@ -224,12 +226,15 @@ public class FMRadio extends Activity
    private TextView mSleepMsgTV;
    private TextView mRecordingMsgTV;
 
+   private ImageView mFmSeeker;
+
    private double mOutputFreq;
    private int mPresetPageNumber = 0;
    private int mStereo = -1;
 
    private static boolean mFMStats = false;
 
+   private boolean mShowStationList = false;
 
    /* Current Status Indicators */
    private static boolean mRecording = false;
@@ -278,7 +283,7 @@ public class FMRadio extends Activity
    public static boolean mUpdatePickerValue = false;
 
    private LoadedDataAndState SavedDataAndState = null;
-   private static String mBTsoc;
+   private static String mBTsoc = "invalid";
 
    /** fm stats property string */
    public static final String FM_STATS_PROP = "persist.fm.stats";
@@ -336,6 +341,17 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       DisplayMetrics outMetrics = new DisplayMetrics();
       getWindowManager().getDefaultDisplay().getMetrics(outMetrics );
 
+      getWindow().setBackgroundDrawableResource(R.color.background_color);
+
+      // Set up your ActionBar
+      final ActionBar actionBar = getActionBar();
+      actionBar.setDisplayShowHomeEnabled(false);
+      actionBar.setDisplayShowTitleEnabled(false);
+      actionBar.setDisplayShowCustomEnabled(true);
+      actionBar.setCustomView(R.layout.action_bar);
+
+      ((TextView) findViewById(R.id.title)).setText(R.string.app_name);
+
       setContentView(R.layout.fmradio);
       SavedDataAndState = (LoadedDataAndState)getLastNonConfigurationInstance();
 
@@ -375,14 +391,14 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       mForwardButton = (ImageView)findViewById(R.id.btn_forward);
       if (mForwardButton != null) {
           mForwardButton.setOnClickListener(mForwardClickListener);
-          mForwardButton.setOnLongClickListener(mForwardLongClickListener);
       }
 
       mBackButton = (ImageView)findViewById(R.id.btn_back);
       if (mBackButton != null) {
           mBackButton.setOnClickListener(mBackClickListener);
-          mBackButton.setOnLongClickListener(mBackLongClickListener);
       }
+
+      mFmSeeker = (ImageView)findViewById(R.id.fm_seeker);
 
       /* 6 Preset Buttons */
       mPresetButtons[0] = (Button)findViewById(R.id.presets_button_1);
@@ -432,6 +448,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       if ((mERadioTextScroller == null) && (mERadioTextTV != null)) {
           mERadioTextScroller = new ScrollerText(mERadioTextTV);
       }
+      mBTsoc = SystemProperties.get("vendor.qcom.bluetooth.soc");
    }
 
    protected void setDisplayvalue(){
@@ -541,13 +558,34 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       mERadioTextScroller.stopScroll();
       FmSharedPreferences.setTunedFrequency(mTunedStation.getFrequency());
       mPrefs.Save();
+      if (mService != null) {
+          try {
+            mService.unregisterCallbacks();
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+      }
    }
+
+    private void syncScanState() {
+        if (!mIsScaning || mService == null) {
+            return;
+        }
+        try {
+            if (!mService.isSearchInProgress()) {
+                mServiceCallbacks.onSearchComplete();
+            }
+        }catch (RemoteException e) {
+            e.printStackTrace();
+        }
+    }
 
    @Override
    public void onResume() {
       Log.d(LOGTAG, "FMRadio: onResume");
 
       super.onResume();
+      syncScanState();
 
       if (mService == null) {
           Log.d(LOGTAG,"bind callback has not received yet - wait for 100ms");
@@ -671,7 +709,6 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       MenuItem item;
       boolean radioOn = isFmOn();
       boolean recording = isRecording();
-      boolean mSpeakerPhoneOn = isSpeakerEnabled();
       boolean sleepActive = isSleepTimerActive();
       boolean searchActive = isScanActive() || isSeekActive();
       Log.d(LOGTAG, "onCreateOptionsmenu");
@@ -691,14 +728,12 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
           item = menu.add(0, MENU_RECORD_START, 0, R.string.menu_record_start)
                               .setIcon(R.drawable.ic_menu_record);
           if (item != null) {
-             item.setVisible(true);
-             item.setEnabled((!recording) && radioOn);
+             item.setVisible((!recording) && radioOn);
           }
           item = menu.add(0, MENU_RECORD_STOP, 0, R.string.menu_record_stop)
                               .setIcon(R.drawable.ic_menu_record);
           if (item != null) {
-             item.setVisible(true);
-             item.setEnabled(recording && radioOn);
+             item.setVisible(recording && radioOn);
           }
       }
       /* Settings can be active */
@@ -733,7 +768,6 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       boolean radioOn = isFmOn();
       boolean recording = isRecording();
       boolean RtPlusSupported = isRtPlusSupported();
-      boolean mSpeakerPhoneOn = isSpeakerEnabled();
       boolean searchActive = isScanActive() || isSeekActive();
 
       item = menu.findItem(MENU_SCAN_START);
@@ -789,29 +823,12 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
           startActivity(launchFMStatIntent);
           return true;
       case MENU_SCAN_START:
-          Log.d(LOGTAG, "mBTsoc: " + mBTsoc + " mService: " + mService);
-
-          if (mBTsoc == null) {
-              if (mService != null) {
-                  try {
-                      mBTsoc = mService.getSocName();
-                      Log.d(LOGTAG, "mBTsoc: " + mBTsoc);
-                  }catch (RemoteException e) {
-                      e.printStackTrace();
-                      return false;
-                  }
-              } else {
-                return false;
-              }
-          }
-
          if (mBTsoc.equals("rome")) {
              clearStationList();
              initiateSearch(0); // 0 - All stations
          } else {
              displayDialog(DIALOG_SEARCH);
          }
-
          return true;
       case MENU_SCAN_STOP:
          cancelSearch();
@@ -846,7 +863,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
    }
 
    private void enableSpeaker() {
-    //This method with toggle Speaker phone based on existing state .
+       //This method with toggle Speaker phone based on existing state .
        boolean bSpeakerPhoneOn = isSpeakerEnabled();
        if(mService != null) {
            try {
@@ -1203,7 +1220,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       if (bSearchActive) {
           AlertDialog.Builder builder = new AlertDialog.Builder(this);
           builder.setTitle(titleStr);
-          builder.setIcon(R.drawable.ic_launcher_fmradio);
+          builder.setIcon(R.mipmap.ic_launcher);
           View view = getLayoutInflater().inflate(R.layout.layout_dialog_progress,null);
           builder.setView(view);
           TextView tvMessage = (TextView)view.findViewById(R.id.id_tv_message);
@@ -1289,7 +1306,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                                                 R.layout.alert_dialog_text_entry, null);
       dlgBuilder.setTitle(R.string.dialog_presetlist_rename_title);
       dlgBuilder.setView(textEntryView);
-      dlgBuilder.setPositiveButton(R.string.alert_dialog_ok,
+      dlgBuilder.setPositiveButton(android.R.string.ok,
                                    new DialogInterface.OnClickListener() {
                                       public void onClick(DialogInterface dialog, int whichButton) {
                                          //int curList = FmSharedPreferences.getCurrentListIndex();
@@ -1308,7 +1325,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                                          closeDialog(DIALOG_PRESET_RENAME);
                                       }
                                    });
-      dlgBuilder.setNegativeButton(R.string.alert_dialog_cancel,
+      dlgBuilder.setNegativeButton(android.R.string.cancel,
                                    new DialogInterface.OnClickListener() {
                                       public void onClick(DialogInterface dialog, int whichButton) {
                                          closeDialog(DIALOG_PRESET_RENAME);
@@ -1322,7 +1339,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          dlgBuilder.setIcon(R.drawable.alert_dialog_icon)
                    .setTitle(R.string.fm_command_timeout_title);
          dlgBuilder.setMessage(R.string.fm_tune_timeout_msg);
-         dlgBuilder.setPositiveButton(R.string.alert_dialog_ok,
+         dlgBuilder.setPositiveButton(android.R.string.ok,
                                       new DialogInterface.OnClickListener() {
                                          public void onClick(DialogInterface dialog,
                                                              int whichButton) {
@@ -1341,7 +1358,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                 .setTitle(R.string.fm_command_failed_title);
       dlgBuilder.setMessage(R.string.fm_cmd_failed_msg);
 
-      dlgBuilder.setPositiveButton(R.string.alert_dialog_ok,
+      dlgBuilder.setPositiveButton(android.R.string.ok,
                                    new DialogInterface.OnClickListener() {
                                       public void onClick(DialogInterface dialog,
                                                           int whichButton) {
@@ -1359,7 +1376,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                  .setTitle(R.string.fm_command_failed_title);
        dlgBuilder.setMessage(R.string.fm_cmd_failed_call_on);
 
-       dlgBuilder.setPositiveButton(R.string.alert_dialog_ok,
+       dlgBuilder.setPositiveButton(android.R.string.ok,
                                     new DialogInterface.OnClickListener() {
                                        public void onClick(DialogInterface dialog,
                                                            int whichButton) {
@@ -1395,35 +1412,15 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
    private View.OnClickListener mForwardClickListener =
       new View.OnClickListener() {
         public void onClick(View v) {
-          int frequency = FmSharedPreferences.getNextTuneFrequency();
-          Log.d(LOGTAG, "Tune Up: to " + frequency);
-          tuneRadio(frequency);
+          SeekNextStation();
       }
    };
 
    private View.OnClickListener mBackClickListener =
       new View.OnClickListener() {
         public void onClick(View v) {
-          int frequency = FmSharedPreferences.getPrevTuneFrequency();
-          Log.d(LOGTAG, "Tune Down: to " + frequency);
-          tuneRadio(frequency);
-      }
-   };
-
-   private View.OnLongClickListener mForwardLongClickListener =
-      new View.OnLongClickListener() {
-        public boolean onLongClick(View view) {
-          SeekNextStation();
-          return true;
-        }
-   };
-
-   private View.OnLongClickListener mBackLongClickListener =
-      new View.OnLongClickListener() {
-        public boolean onLongClick(View view) {
           SeekPreviousStation();
-          return true;
-        }
+      }
    };
 
    private View.OnClickListener mPresetsPageClickListener =
@@ -1458,7 +1455,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                displayDialog(DIALOG_PRESET_OPTIONS);
            }else {
                addToPresets();
-               view.startAnimation(mAnimation);
+               //view.startAnimation(mAnimation);
            }
          return true;
       }
@@ -1477,7 +1474,6 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
         new View.OnClickListener() {
           @Override
           public void onClick(View v) {
-             // TODO Auto-generated method stub
              mSpeakerButton.setClickable(false);
              mSpeakerButton.setOnClickListener(null);
              mHandler.removeCallbacks(mEnableRadioTask);
@@ -1620,7 +1616,6 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                 bStatus = mService.fmOn();
                 if(bStatus) {
                    tuneRadio(FmSharedPreferences.getTunedFrequency());
-                   enableRadioOnOffUI();
                 }else {
                    Log.e(LOGTAG, "mService.fmOn failed");
                    mCommandFailed = CMD_FMON;
@@ -1778,8 +1773,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
 
    private void setRecordingStartImage() {
        if(null != mRecordingMsgTV) {
-          mRecordingMsgTV.setCompoundDrawablesWithIntrinsicBounds
-                           (R.drawable.recorder_start, 0, 0, 0);
+          mRecordingMsgTV.setCompoundDrawables(null,  null,  null,  null);
        }
    }
 
@@ -1868,6 +1862,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          FmSharedPreferences.addStation(selectedStation.getName(), selectedStation
                         .getFrequency(), currentList);
          setupPresetLayout();
+         mPrefs.Save();
       }
    }
 
@@ -1886,6 +1881,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
           setMuteModeButtonImage(false);
       }
       if (bEnable) {
+         mFmSeeker.setVisibility(View.VISIBLE);
          if (mRadioTextScroller != null) {
              mRadioTextScroller.startScroll();
          }
@@ -1910,6 +1906,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
              }
         }
       }else {
+         mFmSeeker.setVisibility(View.INVISIBLE);
          if (mRadioTextScroller != null) {
              mRadioTextScroller.stopScroll();
          }
@@ -1918,7 +1915,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          }
          for (int nButton = 0; nButton < MAX_PRESETS_PER_PAGE; nButton++) {
              if (mPresetButtons[nButton] != null) {
-                  mPresetButtons[nButton].setTextColor(Color.BLACK);
+                  mPresetButtons[nButton].setTextColor(Color.WHITE);
              }
          }
       }
@@ -1948,23 +1945,19 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       }
       if (mSleepMsgTV != null) {
          mSleepMsgTV.setVisibility(((bEnable && isSleepTimerActive()) ? View.VISIBLE
-                                 : View.INVISIBLE));
+                                 : View.GONE));
       }
       if (mRecordingMsgTV != null) {
          mRecordingMsgTV.setVisibility(((bEnable == true) ? View.VISIBLE
-                                     : View.INVISIBLE));
-      }
-      if (mRadioTextTV != null) {
-         mRadioTextTV.setVisibility(((bEnable == true) ? View.VISIBLE
-                                  : View.INVISIBLE));
+                                     : View.GONE));
       }
       if(mERadioTextTV != null) {
          mERadioTextTV.setVisibility(((bEnable == true) ? View.VISIBLE
-                                  : View.INVISIBLE));
+                                  : View.GONE));
       }
       if (mProgramServiceTV != null) {
          mProgramServiceTV.setVisibility(((bEnable == true) ? View.VISIBLE
-                                  : View.INVISIBLE));
+                                  : View.GONE));
       }
 
       if (!isAntennaAvailable()) {
@@ -1978,11 +1971,12 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          }
       }else if (isCallActive()) {
          if (mRadioTextTV != null) {
-            mRadioTextTV.setText("");
-            mRadioTextScroller.mOriginalString = "";
+            mRadioTextTV.setText(getString(R.string.fm_call));
+            mRadioTextScroller.mOriginalString = getString(R.string.fm_call);
          }
          if (mERadioTextTV != null) {
              mERadioTextTV.setText("");
+             mERadioTextTV.setVisibility(View.GONE);
              mERadioTextScroller.mOriginalString = "";
          }
          if (mOnOffButton != null) {
@@ -1990,11 +1984,16 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          }
       }else {
          if (mRadioTextTV != null) {
-             mRadioTextTV.setText("");
+             if (bEnable) {
+                 mRadioTextTV.setText("");
+             } else {
+                 mRadioTextTV.setText(getString(R.string.fm_off));
+             }
              mRadioTextScroller.mOriginalString = "";
          }
          if (mERadioTextTV != null) {
              mERadioTextTV.setText("");
+             mERadioTextTV.setVisibility(View.GONE);
              mERadioTextScroller.mOriginalString = "";
          }
          if (mOnOffButton != null) {
@@ -2002,7 +2001,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          }
       }
 
-      if (mStereoTV != null) {
+      if (false && mStereoTV != null) {
           mStereoTV.setVisibility(((bEnable == true) ? View.VISIBLE
                                    : View.INVISIBLE));
       }
@@ -2057,6 +2056,29 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       }
    }
 
+   private void saveStations() {
+       List<Integer> scannedFrequencies = null;
+       try {
+           scannedFrequencies = mService.getScannedFrequencies();
+       } catch (RemoteException e) {
+           e.printStackTrace();
+       }
+       if (scannedFrequencies != null && scannedFrequencies.size() > 0) {
+           Collections.sort(scannedFrequencies);
+           SharedPreferences sp = getSharedPreferences(SCAN_STATION_PREFS_NAME, 0);
+           SharedPreferences.Editor editor = sp.edit();
+
+           int index = 0;
+           for (Integer freq : scannedFrequencies) {
+               index++;
+               editor.putString(STATION_NAME + index, index + "");
+               editor.putInt(STATION_FREQUENCY + index, freq);
+           }
+           editor.putInt(NUM_OF_STATIONS, index);
+           editor.commit();
+       }
+   }
+
    private void setupPresetLayout() {
       int numStations = FmSharedPreferences.getListStationCount();
       int addedStations = 0;
@@ -2097,7 +2119,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
 
    private void updateStationInfoToUI() {
       double frequency = mTunedStation.getFrequency() / 1000.0;
-      mTuneStationFrequencyTV.setText("" + frequency + "MHz");
+      mTuneStationFrequencyTV.setText("" + frequency);
       if ((mPicker != null) && mUpdatePickerValue) {
           mPicker.setValue(((mTunedStation.getFrequency() - mPrefs.getLowerLimit())
                               / mPrefs.getFrequencyStepSize()));
@@ -2106,6 +2128,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       mProgramTypeTV.setText(mTunedStation.getPtyString());
       mRadioTextTV.setText("");
       mERadioTextTV.setText("");
+      mERadioTextTV.setVisibility(View.GONE);
       mRadioTextScroller.mOriginalString = "";
       mRadioTextScroller.mStringlength = 0;
       mRadioTextScroller.mIteration = 0;
@@ -2394,7 +2417,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          }
       }
       if(null != mSleepMsgTV) {
-         mSleepMsgTV.setVisibility(View.INVISIBLE);
+         mSleepMsgTV.setVisibility(View.GONE);
       }
    }
 
@@ -2426,7 +2449,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
    }
 
    private void updateExpiredSleepTime() {
-      int vis = View.INVISIBLE;
+      int vis = View.GONE;
       if (isSleepTimerActive()) {
          long timeNow = ((SystemClock.elapsedRealtime()));
          if (mSleepAtPhoneTime >= timeNow) {
@@ -2435,8 +2458,8 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
             mSleepMsgTV.setText(sleepMsg);
             if (seconds < SLEEP_TOGGLE_SECONDS) {
                int nowVis = mSleepMsgTV.getVisibility();
-               vis = (nowVis == View.INVISIBLE) ? View.VISIBLE
-                     : View.INVISIBLE;
+               vis = (nowVis == View.GONE) ? View.VISIBLE
+                     : View.GONE;
             }else {
                vis = View.VISIBLE;
             }
@@ -2552,6 +2575,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
              mTunedStation.setPI(0);
              mTunedStation.setPty(0);
              updateStationInfoToUI();
+             enableRadioOnOffUI();
          }catch (RemoteException e) {
             e.printStackTrace();
          }
@@ -2600,7 +2624,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       mTunedStation.setPI(0);
       mTunedStation.setRDSSupported(false);
       mTunedStation.setPty(0);
-      mRadioTextTV.setText("");
+      mRadioTextTV.setText(getString(R.string.fm_off));
       mERadioTextTV.setText("");
       mRadioTextScroller.mOriginalString = "";
       mProgramServiceTV.setText("");
@@ -2609,6 +2633,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       mERadioTextScroller.stopScroll();
       mUpdatePickerValue = true;
       updateStationInfoToUI();
+      enableRadioOnOffUI();
    }
 
    Runnable mRadioEnabled = new Runnable() {
@@ -2662,6 +2687,12 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          updateSearchProgress();
          resetFMStationInfoUI();
          invalidateOptionsMenu();
+         saveStations();
+         if (mShowStationList) {
+            Intent stationListIntent = new Intent(FMRadio.this, StationListActivity.class);
+            startActivity(stationListIntent);
+         }
+         mShowStationList = false;
       }
    };
 
@@ -2705,7 +2736,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                   mRadioTextScroller.mOriginalString = str;
                }else if(TextUtils.isEmpty(str)) { /* Rest the string to empty*/
                   mRadioTextTV.setText("");
-                  mRadioTextScroller.mOriginalString = "";
+                  mRadioTextScroller.mOriginalString = getString(R.string.fm_off);
                }else {
                   Log.v(LOGTAG, "mUpdateRadioText: Leaving old string " + mRadioTextTV.getText());
                }
@@ -2749,6 +2780,7 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
                    mERadioTextTV.setText("");
                    mERadioTextScroller.mOriginalString = "";
                }else {
+                   mERadioTextTV.setVisibility(View.GONE);
                    mERadioTextTV.setText(str);
                    mERadioTextScroller.mOriginalString = str;
                }
@@ -3069,15 +3101,6 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
          Log.d(LOGTAG, "mServiceCallbacks.onTuneStatusChanged: ");
          if (mIsScaning) {
              Log.d(LOGTAG, "isScanning....................");
-             SharedPreferences sp = getSharedPreferences(SCAN_STATION_PREFS_NAME, 0);
-             SharedPreferences.Editor editor = sp.edit();
-             int station_number = sp.getInt(NUM_OF_STATIONS, 0);
-             station_number++;
-             editor.putInt(NUM_OF_STATIONS, station_number);
-             editor.putString(STATION_NAME + station_number, station_number + "");
-             editor.putInt(STATION_FREQUENCY + station_number,
-                                   FmSharedPreferences.getTunedFrequency());
-             editor.commit();
          }
          cleanupTimeoutHandler();
          mHandler.post(mUpdateStationInfo);
@@ -3106,6 +3129,26 @@ public void onRequestPermissionsResult(int requestCode, String[] permissions,  i
       }
       public void onSearchComplete() {
          Log.d(LOGTAG, "mServiceCallbacks.onSearchComplete :");
+         if (mIsScaning) {
+             List<Integer> scannedFrequencies = null;
+             try {
+                 scannedFrequencies = mService.getScannedFrequencies();
+             } catch (RemoteException e) {
+                 e.printStackTrace();
+             }
+             if (scannedFrequencies != null && !scannedFrequencies.isEmpty()) {
+                 mShowStationList = true;
+             } else {
+                 mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast t = Toast.makeText(FMRadio.this,
+                           getString(R.string.fm_search_no_results), Toast.LENGTH_SHORT);
+                        t.show();
+                    }
+                 });
+             }
+         }
          mScanPty = 0;
          mScanPtyIndex = 0;
          mIsScaning = false;

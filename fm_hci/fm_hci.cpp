@@ -60,11 +60,11 @@ using android::hardware::ProcessState;
 using ::android::hardware::Return;
 using ::android::hardware::Void;
 using ::android::hardware::hidl_vec;
-using ::android::hardware::hidl_death_recipient;
 
 static struct fm_hci_t hci;
 
 typedef std::unique_lock<std::mutex> Lock;
+static std::recursive_mutex mtx;
 android::sp<IFmHci> fmHci;
 
 static int enqueue_fm_rx_event(struct fm_event_header_t *hdr);
@@ -81,31 +81,6 @@ static void cleanup_threads();
 static bool hci_initialize();
 static void hci_transmit(struct fm_command_header_t *hdr);
 static void hci_close();
-#define HCI_EV_HW_ERR_EVENT             0x1A
-
-void hal_service_died() {
-    struct fm_event_header_t *temp = (struct fm_event_header_t *)
-                       malloc(sizeof(struct fm_event_header_t));
-    if (temp != nullptr) {
-        temp->evt_code = HCI_EV_HW_ERR_EVENT;
-        temp->evt_len = 0;
-        ALOGI("%s: evt_code:  0x%x", __func__, temp->evt_code);
-        enqueue_fm_rx_event(temp);
-    } else {
-        ALOGE("%s: Memory Allocation failed for event buffer ",__func__);
-    }
-}
-
-class FmHciDeathRecipient : public hidl_death_recipient {
-    public:
-       virtual void serviceDied(uint64_t /*cookie*/,
-           const android::wp<::android::hidl::base::V1_0::IBase>& /*who*/) {
-       ALOGE("Fm HAL service died!");
-       hal_service_died();
-   }
-};
-
-android::sp<FmHciDeathRecipient> fmHciDeathRecipient = new FmHciDeathRecipient();
 
 /*******************************************************************************
 **
@@ -124,12 +99,37 @@ static int enqueue_fm_rx_event(struct fm_event_header_t *hdr)
 {
 
     ALOGV("%s: putting lock before enqueue ", __func__);
-    hci.rx_cond_mtx.lock();
+    /*
+     * enqueue_fm_rx_event may need to wait for rx_cond_mtx here as
+     * last event is still under processing, besides current event
+     * has held internal_mutex_ when OnPacketReady called in data_handler.cpp
+     * if last event is HCI_EV_CMD_COMPLETE, it will try to hold
+     * internal_mutex_ again when calling close in data_handler,
+     * thus, last event will wait for internal_mutex_ while new event
+     * will wait util last event done, finally dead lock occurs.
+     * so we try to check hci state here if rx_cond_mtx is still locked
+     */
+    int tryLockCount = 0;
+    while (1) {
+        if (!hci.rx_cond_mtx.try_lock()) {
+            if (hci.state == FM_RADIO_DISABLING || hci.state == FM_RADIO_DISABLED) {
+                ALOGI("%s: can't lock rx_cond_mtx and hci is not available", __func__);
+                return FM_HC_STATUS_NULL_POINTER;
+            }
+            usleep(1000);
+            tryLockCount++;
+            continue;
+        } else {
+            break;
+        }
+    }
+    hci.rx_queue_mtx.lock();
     hci.rx_event_queue.push(hdr);
-    hci.rx_cond_mtx.unlock();
+    hci.rx_queue_mtx.unlock();
     ALOGV("%s:notify to waiting thred", __func__);
     hci.rx_cond.notify_all();
-    ALOGI("%s: FM-Event ENQUEUED SUCCESSFULLY", __func__);
+    ALOGI("%s: FM-Event ENQUEUED SUCCESSFULLY tryLockCount = %d", __func__, tryLockCount);
+    hci.rx_cond_mtx.unlock();
 
     return FM_HC_STATUS_SUCCESS;
 }
@@ -153,14 +153,17 @@ static void dequeue_fm_rx_event()
 
     ALOGI("%s", __func__);
     while (1) {
+        hci.rx_queue_mtx.lock();
         if (hci.rx_event_queue.empty()) {
             ALOGI("No more FM Events are available in the RX Queue");
+            hci.rx_queue_mtx.unlock();
             return;
         } else {
         }
 
         evt_buf = hci.rx_event_queue.front();
         hci.rx_event_queue.pop();
+        hci.rx_queue_mtx.unlock();
 
         if (evt_buf->evt_code == FM_CMD_COMPLETE) {
             ALOGI("%s: FM_CMD_COMPLETE: current_credits %d, %d Credits got from the SOC", __func__, hci.command_credits, evt_buf->params[0]);
@@ -482,7 +485,6 @@ static void initialization_complete(bool is_hci_initialize)
     int ret;
     ALOGI("++%s: is_hci_initialize: %d", __func__, is_hci_initialize);
 
-    hci.on_mtx.lock();
     while (is_hci_initialize) {
         ret = start_tx_thread();
         if (ret)
@@ -505,7 +507,6 @@ static void initialization_complete(bool is_hci_initialize)
     }
 
     hci.on_cond.notify_all();
-    hci.on_mtx.unlock();
     ALOGI("--%s: is_hci_initialize: %d", __func__, is_hci_initialize);
 
 }
@@ -546,6 +547,7 @@ class FmHciCallbacks : public IFmHciCallbacks {
                 memcpy(temp, event.data(), event.size());
                 ALOGI("%s: evt_code:  0x%x", __func__, temp->evt_code);
                 enqueue_fm_rx_event(temp);
+                ALOGI("%s: evt_code:  0x%x done", __func__, temp->evt_code);
             } else {
                 ALOGE("%s: Memory Allocation failed for event buffer ",__func__);
             }
@@ -568,7 +570,10 @@ class FmHciCallbacks : public IFmHciCallbacks {
 *******************************************************************************/
 static bool hci_initialize()
 {
-    ALOGI("%s", __func__);
+    ALOGI("%s: acquiring mutex", __func__);
+    std::lock_guard<std::recursive_mutex> lk(mtx);
+
+    fmHci = IFmHci::getService();
 
     if (fmHci != nullptr) {
         hci.state = FM_RADIO_ENABLING;
@@ -599,7 +604,8 @@ static bool hci_initialize()
 static void hci_transmit(struct fm_command_header_t *hdr) {
     HciPacket data;
 
-    ALOGI("%s: opcode 0x%x len:%d", __func__, hdr->opcode, hdr->len);
+    ALOGI("%s: opcode 0x%x len:%d, acquiring mutex", __func__, hdr->opcode, hdr->len);
+    std::lock_guard<std::recursive_mutex> lk(mtx);
 
     if (fmHci != nullptr) {
         data.setToExternal((uint8_t *)hdr, 3 + hdr->len);
@@ -629,13 +635,10 @@ static void hci_transmit(struct fm_command_header_t *hdr) {
 *******************************************************************************/
 static void hci_close()
 {
-    ALOGI("%s", __func__);
+    ALOGI("%s: acquiring mutex", __func__);
+    std::lock_guard<std::recursive_mutex> lk(mtx);
 
     if (fmHci != nullptr) {
-        auto death_unlink = fmHci->unlinkToDeath(fmHciDeathRecipient);
-        if (!death_unlink.isOk()) {
-            ALOGE( "%s: Error unlinking death recipient from the Fm HAL", __func__);
-        }
         auto hidl_daemon_status = fmHci->close();
         if(!hidl_daemon_status.isOk()) {
             ALOGE("%s: HIDL daemon is dead", __func__);
@@ -696,10 +699,10 @@ int fm_hci_init(fm_hci_hal_t *hci_hal)
 
     if (hci_initialize()) {
         //wait for iniialization complete
-        Lock lk(hci.on_mtx);
+        ALOGD("--%s waiting for iniialization complete hci state: %d ",
+                __func__, hci.state);
         if(hci.state == FM_RADIO_ENABLING){
-            ALOGD("--%s waiting for iniialization complete hci state: %d ",
-                    __func__, hci.state);
+            Lock lk(hci.on_mtx);
             std::cv_status status = std::cv_status::no_timeout;
             auto now = std::chrono::system_clock::now();
             status =
@@ -710,7 +713,6 @@ int fm_hci_init(fm_hci_hal_t *hci_hal)
                  kill(getpid(), SIGKILL);
              }
         }
-        hci.on_mtx.unlock();
     }
 
     if (hci.state == FM_RADIO_ENABLED) {

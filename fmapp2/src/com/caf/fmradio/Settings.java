@@ -120,7 +120,7 @@ public class Settings extends PreferenceActivity implements
            mBandPreference = new ListPreference(this);
            mBandPreference.setEntries(R.array.regional_band_entries);
            mBandPreference.setEntryValues(R.array.regional_band_values);
-           mBandPreference.setDialogTitle(R.string.sel_band_menu);
+           mBandPreference.setDialogTitle(R.string.regional_band);
            mBandPreference.setKey(REGIONAL_BAND_KEY);
            mBandPreference.setTitle(R.string.regional_band);
            index = FmSharedPreferences.getCountry();
@@ -135,7 +135,7 @@ public class Settings extends PreferenceActivity implements
            mChannelSpacingPref = new ListPreference(this);
            mChannelSpacingPref.setEntries(R.array.channel_spacing_entries);
            mChannelSpacingPref.setEntryValues(R.array.channel_spacing_val);
-           mChannelSpacingPref.setDialogTitle(R.string.sel_chanl_spacing);
+           mChannelSpacingPref.setDialogTitle(R.string.chanl_spacing);
            mChannelSpacingPref.setTitle(R.string.chanl_spacing);
            mChannelSpacingPref.setKey(CHAN_SPACING_KEY);
 
@@ -145,6 +145,7 @@ public class Settings extends PreferenceActivity implements
            mUserBandMinPref.getEditText().setInputType(InputType.TYPE_CLASS_NUMBER |
                                                         InputType.TYPE_NUMBER_FLAG_DECIMAL);
            mUserBandMinPref.setDialogTitle(R.string.usr_def_band_min);
+           mUserBandMinPref.getEditText().setSelectAllOnFocus(true);
 
            mUserBandMaxPref = new EditTextPreference(this);
            mUserBandMaxPref.setKey(USER_DEFINED_BAND_MAX_KEY);
@@ -152,6 +153,7 @@ public class Settings extends PreferenceActivity implements
            mUserBandMaxPref.setDialogTitle(R.string.usr_def_band_max);
            mUserBandMaxPref.getEditText().setInputType(InputType.TYPE_CLASS_NUMBER |
                                                         InputType.TYPE_NUMBER_FLAG_DECIMAL);
+           mUserBandMaxPref.getEditText().setSelectAllOnFocus(true);
 
            setBandSummary(index);
 
@@ -181,7 +183,7 @@ public class Settings extends PreferenceActivity implements
                       index = 1;
                    }
                }
-               mAudioPreference.setDialogTitle(R.string.sel_audio_output);
+               mAudioPreference.setDialogTitle(R.string.aud_output_mode);
                mAudioPreference.setKey(AUDIO_OUTPUT_KEY);
                mAudioPreference.setTitle(R.string.aud_output_mode);
 
@@ -194,8 +196,6 @@ public class Settings extends PreferenceActivity implements
                mAfPref = new CheckBoxPreference(this);
                mAfPref.setKey(AUTO_AF);
                mAfPref.setTitle(R.string.auto_select_af);
-               mAfPref.setSummaryOn(R.string.auto_select_af_enabled);
-               mAfPref.setSummaryOff(R.string.auto_select_af_disabled);
                boolean bAFAutoSwitch = FmSharedPreferences.getAutoAFSwitch();
                Log.d(LOGTAG, "createPreferenceHierarchy: bAFAutoSwitch: "
                               + bAFAutoSwitch);
@@ -209,7 +209,7 @@ public class Settings extends PreferenceActivity implements
                 mRecordDurPreference = new ListPreference(this);
                 mRecordDurPreference.setEntries(R.array.record_durations_entries);
                 mRecordDurPreference.setEntryValues(R.array.record_duration_values);
-                mRecordDurPreference.setDialogTitle(R.string.sel_rec_dur);
+                mRecordDurPreference.setDialogTitle(R.string.record_dur);
                 mRecordDurPreference.setKey(RECORD_DURATION_KEY);
                 mRecordDurPreference.setTitle(R.string.record_dur);
                 nRecordDuration = FmSharedPreferences.getRecordDuration();
@@ -279,7 +279,7 @@ public class Settings extends PreferenceActivity implements
               if((index < 0) || (index >= summaryBandItems.length)) {
                   index = 0;
                   mBandPreference.setValueIndex(0);
-              }else if((index + 1) == summaryBandItems.length) {
+              }else if(index == FmSharedPreferences.REGIONAL_BAND_USER_DEFINED) {
                    mChannelSpacingPref.setEnabled(true);
               }else {
                    mChannelSpacingPref.setEnabled(false);
@@ -347,14 +347,10 @@ public class Settings extends PreferenceActivity implements
                   && (noOfChannels > 0) && (band_width >= 100)) {
                   FmSharedPreferences.setLowerLimit((int)freq);
                   sendSettingsChangedIntent(FM_BAND_CHANGED);
-                  setBandSummary(summaryBandItems.length - 1);
+                  setBandSummary(FmSharedPreferences.REGIONAL_BAND_USER_DEFINED);
                   clearStationList();
                }else {
-                  if ((Locale.getDefault().toString().equals("zh_HK")))
-                      Toast.makeText(this,"請輸入有效的頻道範圍76.0-108.0",
-                                                            Toast.LENGTH_SHORT).show();
-                  else
-                      Toast.makeText(this, getString(R.string.user_defind_band_msg),
+                  Toast.makeText(this, getString(R.string.user_defind_band_msg),
                                                             Toast.LENGTH_SHORT).show();
                }
            }else if(key.equals(USER_DEFINED_BAND_MAX_KEY)) {
@@ -375,14 +371,10 @@ public class Settings extends PreferenceActivity implements
                   && (noOfChannels > 0) && (band_width >= 100)) {
                   FmSharedPreferences.setUpperLimit((int)freq);
                   sendSettingsChangedIntent(FM_BAND_CHANGED);
-                  setBandSummary(summaryBandItems.length - 1);
+                  setBandSummary(FmSharedPreferences.REGIONAL_BAND_USER_DEFINED);
                   clearStationList();
                }else {
-                  if ((Locale.getDefault().toString().equals("zh_HK")))
-                      Toast.makeText(this,"請輸入有效的頻道範圍76.0-108.0",
-                                                            Toast.LENGTH_SHORT).show();
-                  else
-                      Toast.makeText(this, getString(R.string.user_defind_band_msg),
+                  Toast.makeText(this, getString(R.string.user_defind_band_msg),
                                                             Toast.LENGTH_SHORT).show();
                }
           }else {
@@ -467,7 +459,7 @@ public class Settings extends PreferenceActivity implements
                       R.drawable.alert_dialog_icon).setTitle(
                       R.string.settings_revert_confirm_title).setMessage(
                       R.string.settings_revert_confirm_msg).setPositiveButton(
-                      R.string.alert_dialog_ok,
+                      android.R.string.ok,
                       new DialogInterface.OnClickListener() {
                            public void onClick(DialogInterface dialog,
                               int whichButton) {
@@ -477,7 +469,7 @@ public class Settings extends PreferenceActivity implements
                               restoreSettingsDefault();
                               finish();
                            }
-                      }).setNegativeButton(R.string.alert_dialog_cancel,
+                      }).setNegativeButton(android.R.string.cancel,
                               new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface dialog,
                                                        int whichButton) {
@@ -491,8 +483,7 @@ public class Settings extends PreferenceActivity implements
                  mBandPreference
                         .setValueIndex(FmSharedPreferences.REGIONAL_BAND_CHINA);
              }else {
-                 mBandPreference
-                        .setValueIndex(FmSharedPreferences.REGIONAL_BAND_NORTH_AMERICA);
+                 mBandPreference.setValueIndex(FmSharedPreferences.mDefaultCountryIndex);
              }
              if (mRxMode) {
                 mAudioPreference.setValueIndex(0);
@@ -506,8 +497,7 @@ public class Settings extends PreferenceActivity implements
                     FmSharedPreferences
                     .setCountry(FmSharedPreferences.REGIONAL_BAND_CHINA);
                 }else{
-                    FmSharedPreferences
-                    .setCountry(FmSharedPreferences.REGIONAL_BAND_NORTH_AMERICA);
+                    FmSharedPreferences.setCountry(FmSharedPreferences.mDefaultCountryIndex);
                 }
              }
              mPrefs.Save();
@@ -540,7 +530,7 @@ public class Settings extends PreferenceActivity implements
           }
         }
         private void setBandSummary(int index) {
-           if((index + 1) == summaryBandItems.length) {
+           if(index == FmSharedPreferences.REGIONAL_BAND_USER_DEFINED) {
               min_freq = FmSharedPreferences.getLowerLimit();
               max_freq = FmSharedPreferences.getUpperLimit();
               chan_spacing = FmSharedPreferences.getChSpacing();
